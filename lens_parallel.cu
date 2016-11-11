@@ -24,40 +24,61 @@ const float YL2 =  WL;
 
 // Kernel that executes on the CUDA device. This is executed by ONE
 // stream processor
-__global__ void cudaShoot(float* device_array, int threadPerRow, float* xlens, float* ylens, float* eps,
-        float rsrc2, float xsrc, float ysrc, int nlenses, int N)
+__global__ void cudaShoot(float* device_array, int size, float* xlens, float* ylens, float* eps, int nlenses, int lens_scale, int ntotal)
 {
   // What element of the array does this thread work on
+    const float rsrc = 0.1;      // radius
+    const float ldc  = 0.5;      // limb darkening coefficient
+    const float xsrc = 0.0;      // x and y centre on the map
+    const float ysrc = 0.0;
+
+
     float xl, yl, xs, ys, sep2, mu;
 
-
-    int tid = blockDim.x * blockIdx.x + threadIdx.x;
-    yl = YL1 + (tid / threadPerRow) * lens_scale;
-    xl = XL1 + (tid % threadPerRow) * lens_scale;
-
     float xd, yd;
-    int numuse = 0;
     float dx, dy, dr;
 
-    xs = xl;
-    ys = yl;
-    for (int p = 0; p < nlenses; ++p) {
-      dx = xl - xlens[p];
-      dy = yl - ylens[p];
-      dr = dx * dx + dy * dy;
-      xs -= eps[p] * dx / dr;
-      ys -= eps[p] * dy / dr;
-    }
+    const float rsrc2 = rsrc * rsrc;
+    int tid = blockDim.x * blockIdx.x + threadIdx.x;
+    //int ty = blockDim.x * blockIdx.x + threadIdx.y;
 
 
-     xd = xs -xsrc;
-     yd = ys -ysrc;
-     sep2 = xd * xd + yd * yd;
-     if (sep2 < rsrc2)
-     {
-         mu = sqrt (1 - sep2 / rsrc2);
-         device_array[tid%threadPerRow][tid /threadPerRow] = 1.0 - ldc * (1 - mu);
-     }
+    //if (ty * size + tx < ntotal)
+    //if(tid < ntotal)
+    //{
+
+        yl = YL1 + (tid / size) * lens_scale;
+        xl = XL1 + (tid % size) * lens_scale;
+        //float yl = YL1 + (tx/blockDim.x) * lens_scale;
+        //float xl = XL1 + (tx%blockDim.x) * lens_scale;
+
+        //float yl = YL1 + ty * lens_scale;
+        //float xl = XL1 + tx * lens_scale;
+
+        xs = xl;
+        ys = yl;
+
+        for (int p = 0; p < nlenses; ++p) {
+          dx = xl - xlens[p];
+          dy = yl - ylens[p];
+          dr = dx * dx + dy * dy;
+          xs -= eps[p] * dx / dr;
+          ys -= eps[p] * dy / dr;
+        }
+
+
+         xd = xs -xsrc;
+         yd = ys -ysrc;
+         sep2 = xd * xd + yd * yd;
+
+         if (sep2 < rsrc2)
+         {
+             mu = sqrt (1 - sep2 / rsrc2);
+             //device_array[tx + ty * size] = 1.0 - ldc * (1 - mu);
+             device_array[tid] = 1.0 - ldc * (1 - mu);
+         }
+
+    //}
 
 }
 
@@ -70,10 +91,6 @@ int main(void)
     const int nlenses = set_example_1(&xlens, &ylens, &eps);
     std::cout << "# Simulating " << nlenses << " lens system" << std::endl; //nelnses = 1
 
-    const float rsrc = 0.1;      // radius
-    const float ldc  = 0.5;      // limb darkening coefficient
-    const float xsrc = 0.0;      // x and y centre on the map
-    const float ysrc = 0.0;
 
     const float lens_scale = 0.005;
 
@@ -101,7 +118,7 @@ int main(void)
 
     // Allocate in DEVICE memory
     float *device_plane, *dev_xlens, *dev_ylens, *dev_eps;
-    cudaMalloc(&device_place, size);
+    cudaMalloc(&device_plane, size);
     cudaMalloc(&dev_xlens, nlenses);
     cudaMalloc(&dev_ylens, nlenses);
     cudaMalloc(&dev_eps, nlenses);
@@ -124,18 +141,15 @@ int main(void)
     // Put the lens image in this array
     Array<float, 2> lensim(npixy, npixx);
 
-    const float rsrc2 = rsrc * rsrc;
 
     // Launch kernel and time it
     cudaEventRecord(start, 0);
 
-
-    cudaShoot<<<blocksPerGrid, threadsPerBlock>>>(device_plane, npixx, dev_xlens, dev_ylens, dev_eps, rsrc2, xsrc, ysrc, npitotal);
+    cudaShoot<<<blocksPerGrid, threadsPerBlock>>>(device_plane, npixx, dev_xlens, dev_ylens, dev_eps, nlenses, lens_scale, npitotal);
 
 
     cudaEventRecord(stop, 0);
     cudaEventSynchronize(stop);
-
 
 
 
@@ -148,11 +162,8 @@ int main(void)
   // Copy result from device memory into host memory
   cudaMemcpy(host_plane, device_plane, size, cudaMemcpyDeviceToHost);
 
-  for (int i=0; i< npixy; i++)
-      for(int j =0 ; j< npixx; j++)
-      {
-          lensim(i, j ) = device_plane[i][j];
-      }
+
+
 
   // Free device memory
   cudaFree(device_plane);
@@ -160,6 +171,17 @@ int main(void)
   cudaFree(dev_ylens);
   cudaFree(dev_eps);
 
+
+
+  for (int i=0; i< npixy; i++)
+  {
+      for(int j =0 ; j< npixx; j++)
+      {
+          lensim(i, j) = host_plane[j*npixx+i];
+          //std::cout<<"("<<i<<","<<j<<")="<<host_plane[i*npixx+j];
+      }
+      //std::cout<<std::endl;
+  }
   dump_array<float, 2>(lensim, "lens5.fit");
 
   delete[] xlens;

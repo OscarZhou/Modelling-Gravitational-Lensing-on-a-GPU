@@ -20,7 +20,7 @@ LIBS = -lcfitsio -lm
 
 MODS = $(INCP) $(LIBP) $(LIBS) $(OBJS) 
 
-BINS = lens_seq
+BINS = lens_parallel
 
 all : $(BINS)
 
@@ -29,8 +29,8 @@ clean :
 	rm -f *.o
 
 # Demo program. Add more programs by making entries similar to this
-lens_seq : lens_seq.cpp $(OBJS)
-	${CPP} $(CFLAGS) -o lens_seq lens_seq.cpp $(MODS)
+lens_parallel : lens_parallel.cu $(OBJS)
+	${NVCC} $(CFLAGS) -o lens_parallel lens_parallel.cu $(MODS)
 
 # Modules compiled and linked separately
 fitsfile.o : fitsfile.cpp fitsfile.h
