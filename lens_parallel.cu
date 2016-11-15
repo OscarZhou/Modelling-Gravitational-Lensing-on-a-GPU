@@ -24,69 +24,52 @@ const float YL2 =  WL;
 
 // Kernel that executes on the CUDA device. This is executed by ONE
 // stream processor
-__global__ void cudaShoot(float* device_array, float* xlens, float* ylens, float* eps, int nlenses, int lens_scale, int ntotal)
+__global__ void cudaShoot(float* device_array, int npixx, float* xlens, float* ylens, float* eps,
+        float rsrc2, float xsrc, float ysrc, int nlenses, int N)
 {
   // What element of the array does this thread work on
-    const float rsrc = 0.1;      // radius
+    float xl, yl, xs, ys, sep2, mu;
+
     const float ldc  = 0.5;      // limb darkening coefficient
-    const float xsrc = 0.0;      // x and y centre on the map
-    const float ysrc = 0.0;
-//    float xl, yl, xs, ys, sep2, mu;
 
-//    float xd, yd;
-//    float dx, dy, dr;
+    const float lens_scale = 0.005;
+    int tid = blockDim.x * blockIdx.x + threadIdx.x;
 
-    const float rsrc2 = rsrc * rsrc;
-
-    extern __shared__ float yl[];
-    extern __shared__ float xl[];
-    extern __shared__ float xs[];
-    extern __shared__ float ys[];
-    extern __shared__ float dx[];
-    extern __shared__ float dy[];
-    extern __shared__ float dr[];
-    extern __shared__ float xd[];
-    extern __shared__ float yd[];
-    extern __shared__ float sep2[];
-    extern __shared__ float mu[];
-
-    int tidx = blockDim.x * blockIdx.x + threadIdx.x;
-
-    if (tidx < ntotal)
-
+    if (tid < N)
     {
 
-        yl[tidx] = YL1 + (tidx / blockDim.x) * lens_scale;
-        xl[tidx] = XL1 + (tidx % blockDim.x) * lens_scale;
+        yl = YL1 + (tid / npixx) * lens_scale;
+        xl = XL1 + (tid % npixx) * lens_scale;
 
-        xs[tidx] = xl[tidx];
-        ys[tidx] = yl[tidx];
+        float xd, yd;
+        int numuse = 0;
+        float dx, dy, dr;
 
+        xs = xl;
+        ys = yl;
         for (int p = 0; p < nlenses; ++p) {
-          dx[tidx] = xl[tidx] - xlens[p];
-          dy[tidx] = yl[tidx] - ylens[p];
-          dr[tidx] = dx[tidx] * dx[tidx] + dy[tidx] * dy[tidx];
-          xs[tidx] -= eps[p] * dx[tidx] / dr[tidx];
-          ys[tidx] -= eps[p] * dy[tidx] / dr[tidx];
+          dx = xl - xlens[p];
+          dy = yl - ylens[p];
+          dr = dx * dx + dy * dy;
+          xs -= eps[p] * dx / dr;
+          ys -= eps[p] * dy / dr;
         }
 
 
-        xd[tidx] = xs[tidx] -xsrc;
-        yd[tidx] = ys[tidx] -ysrc;
-        sep2[tidx] = xd[tidx] * xd[tidx] + yd[tidx] * yd[tidx];
+         xd = xs -xsrc;
+         yd = ys -ysrc;
+         sep2 = xd * xd + yd * yd;
+         if (sep2 < rsrc2)
+         {
+             mu = sqrt (1 - sep2 / rsrc2);
+             device_array[tid] = 1.0 - ldc * (1 - mu);
+         }
+         else
+         {
+             device_array[tid] = 0;
+         }
 
-        if (sep2[tidx] < rsrc2)
-        {
-            mu[tidx] = sqrt (1 - sep2[tidx] / rsrc2);
-            //device_array[tx + ty * size] = 1.0 - ldc * (1 - mu);
-            //__syncthreads();
-            device_array[tidx] = 1.0 - ldc * (1 - mu[tidx]);
-        }
     }
-
-
-
-
 
 }
 
@@ -96,9 +79,14 @@ int main(void)
     float* xlens;
     float* ylens;
     float* eps;
-    const int nlenses = set_example_1(&xlens, &ylens, &eps);
+    const int nlenses = set_example_n(100, &xlens, &ylens, &eps);
+    size_t lensize = nlenses*sizeof(int);
     std::cout << "# Simulating " << nlenses << " lens system" << std::endl; //nelnses = 1
 
+    const float rsrc = 0.1;      // radius
+    const float ldc  = 0.5;      // limb darkening coefficient
+    const float xsrc = 0.0;      // x and y centre on the map
+    const float ysrc = 0.0;
 
     const float lens_scale = 0.005;
 
@@ -107,10 +95,9 @@ int main(void)
     std::cout << "# Building " << npixx << "X" << npixy << " lens image" << std::endl;
 
 
-    long npitotal = npixx * npixy;
+    int npitotal = npixx * npixy;
     size_t size = npitotal * sizeof(float);
-
-
+    // CUDA event types used for timing execution
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
@@ -128,17 +115,17 @@ int main(void)
     // Allocate in DEVICE memory
     float *device_plane, *dev_xlens, *dev_ylens, *dev_eps;
     cudaMalloc(&device_plane, size);
-    cudaMalloc(&dev_xlens, nlenses);
-    cudaMalloc(&dev_ylens, nlenses);
-    cudaMalloc(&dev_eps, nlenses);
+    cudaMalloc(&dev_xlens, lensize);
+    cudaMalloc(&dev_ylens, lensize);
+    cudaMalloc(&dev_eps, lensize);
 
 
 
     // Copy vectors from host to device memory
     //cudaMemcpy(device_plane, host_plane, size, cudaMemcpyHostToDevice);
-    cudaMemcpy(dev_xlens, xlens, nlenses, cudaMemcpyHostToDevice);
-    cudaMemcpy(dev_ylens, ylens, nlenses, cudaMemcpyHostToDevice);
-    cudaMemcpy(dev_eps, eps, nlenses, cudaMemcpyHostToDevice);
+    cudaMemcpy(dev_xlens, xlens, lensize, cudaMemcpyHostToDevice);
+    cudaMemcpy(dev_ylens, ylens, lensize, cudaMemcpyHostToDevice);
+    cudaMemcpy(dev_eps, eps, lensize, cudaMemcpyHostToDevice);
 
 
 
@@ -150,15 +137,18 @@ int main(void)
     // Put the lens image in this array
     Array<float, 2> lensim(npixy, npixx);
 
+    const float rsrc2 = rsrc * rsrc;
 
     // Launch kernel and time it
     cudaEventRecord(start, 0);
 
-    std::cout<<"blocksPerGrid="<<blocksPerGrid<<"\nthreadsPerBlock="<<threadsPerBlock<<"\n nlenses="<<nlenses<<"\n lens_scale="<<lens_scale<<" \n npitotal="<<npitotal<<std::endl;
-    cudaShoot<<<blocksPerGrid, threadsPerBlock, size>>>(device_plane, dev_xlens, dev_ylens, dev_eps, nlenses, lens_scale, npitotal);
+
+    cudaShoot<<<blocksPerGrid, threadsPerBlock>>>(device_plane, npixx, dev_xlens, dev_ylens, dev_eps, rsrc2, xsrc, ysrc, nlenses, npitotal);
+
 
     cudaEventRecord(stop, 0);
     cudaEventSynchronize(stop);
+
 
 
 
@@ -171,8 +161,11 @@ int main(void)
   // Copy result from device memory into host memory
   cudaMemcpy(host_plane, device_plane, size, cudaMemcpyDeviceToHost);
 
-
-
+  for (int i=0; i< npixy; i++)
+      for(int j =0 ; j< npixx; j++)
+      {
+          lensim(i, j) = host_plane[i*npixx + j];
+      }
 
   // Free device memory
   cudaFree(device_plane);
@@ -180,21 +173,11 @@ int main(void)
   cudaFree(dev_ylens);
   cudaFree(dev_eps);
 
-
-
-  for (int i=0; i< npixy; i++)
-  {
-      for(int j =0 ; j< npixx; j++)
-      {
-          lensim(i, j) = host_plane[i*npixx+j];
-      }
-  }
-  dump_array<float, 2>(lensim, "lens1.fit");
+  dump_array<float, 2>(lensim, "lens3.fit");
 
   delete[] xlens;
   delete[] ylens;
   delete[] eps;
-
 
   free(host_plane);
 }
